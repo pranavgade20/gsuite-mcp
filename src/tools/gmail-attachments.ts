@@ -1,10 +1,9 @@
 import { google, gmail_v1 } from "googleapis";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import type { OAuth2Client } from "google-auth-library";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { ensureAuthorized } from "../auth.js";
+import { accountEmailSchema, accountFor } from "./common.js";
 
 type AttachmentRef = {
   attachmentId: string;
@@ -103,13 +102,16 @@ async function collectMessageIds(
   return ids;
 }
 
-export function registerGmailAttachmentTools(server: McpServer, auth: OAuth2Client): void {
-  const gmail = google.gmail({ version: "v1", auth });
-
-  server.tool(
+export function registerGmailAttachmentTools(
+  server: McpServer,
+  enableWrite = false,
+  allowLocalFiles = true,
+): void {
+  if (allowLocalFiles) server.tool(
     "gmail_download_attachments",
     "Download attachments from messages matching a Gmail search query into a destination directory. Files are named `<messageId>__<originalFilename>` to avoid collisions. Returns a summary.",
     {
+      email: accountEmailSchema,
       query: z.string().describe("Gmail search query (e.g. 'label:DMARC')"),
       dest_dir: z.string().describe("Absolute path to destination directory; created if missing"),
       max_messages: z.number().int().min(1).max(1000).optional().describe("Default 200"),
@@ -122,8 +124,8 @@ export function registerGmailAttachmentTools(server: McpServer, auth: OAuth2Clie
         .optional()
         .describe("Optional case-insensitive substring matched against original filename"),
     },
-    async ({ query, dest_dir, max_messages, mime_type_filter, filename_filter }) => {
-      ensureAuthorized();
+    async ({ email, query, dest_dir, max_messages, mime_type_filter, filename_filter }) => {
+      const gmail = google.gmail({ version: "v1", auth: accountFor(email).client });
 
       const dir = resolve(dest_dir);
       await mkdir(dir, { recursive: true });
@@ -189,57 +191,61 @@ export function registerGmailAttachmentTools(server: McpServer, auth: OAuth2Clie
     },
   );
 
-  server.tool(
-    "gmail_bulk_modify_labels",
-    "Add and/or remove labels on all messages matching a Gmail search query using batchModify (efficient for hundreds of messages). Example: remove_label_ids=['UNREAD'] to bulk mark as read.",
-    {
-      query: z.string().describe("Gmail search query selecting messages to modify"),
-      add_label_ids: z.array(z.string()).optional(),
-      remove_label_ids: z.array(z.string()).optional(),
-      max_messages: z.number().int().min(1).max(10000).optional().describe("Default 1000"),
-    },
-    async ({ query, add_label_ids, remove_label_ids, max_messages }) => {
-      ensureAuthorized();
-      if (!add_label_ids?.length && !remove_label_ids?.length) {
-        throw new Error("Specify at least one of add_label_ids or remove_label_ids");
-      }
-      const cap = max_messages ?? 1000;
-      const ids = await collectMessageIds(gmail, query, cap);
-      if (ids.length === 0) return asText({ matched: 0, modified: 0 });
-      let modified = 0;
-      for (let i = 0; i < ids.length; i += 1000) {
-        const chunk = ids.slice(i, i + 1000);
-        await gmail.users.messages.batchModify({
-          userId: "me",
-          requestBody: {
-            ids: chunk,
-            addLabelIds: add_label_ids,
-            removeLabelIds: remove_label_ids,
-          },
+  if (enableWrite) {
+    server.tool(
+      "gmail_bulk_modify_labels",
+      "Add and/or remove labels on all messages matching a Gmail search query using batchModify (efficient for hundreds of messages). Available only when GMAIL_ENABLE_WRITE=true.",
+      {
+        email: accountEmailSchema,
+        query: z.string().describe("Gmail search query selecting messages to modify"),
+        add_label_ids: z.array(z.string()).optional(),
+        remove_label_ids: z.array(z.string()).optional(),
+        max_messages: z.number().int().min(1).max(10000).optional().describe("Default 1000"),
+      },
+      async ({ email, query, add_label_ids, remove_label_ids, max_messages }) => {
+        const gmail = google.gmail({ version: "v1", auth: accountFor(email).client });
+        if (!add_label_ids?.length && !remove_label_ids?.length) {
+          throw new Error("Specify at least one of add_label_ids or remove_label_ids");
+        }
+        const cap = max_messages ?? 1000;
+        const ids = await collectMessageIds(gmail, query, cap);
+        if (ids.length === 0) return asText({ matched: 0, modified: 0 });
+        let modified = 0;
+        for (let i = 0; i < ids.length; i += 1000) {
+          const chunk = ids.slice(i, i + 1000);
+          await gmail.users.messages.batchModify({
+            userId: "me",
+            requestBody: {
+              ids: chunk,
+              addLabelIds: add_label_ids,
+              removeLabelIds: remove_label_ids,
+            },
+          });
+          modified += chunk.length;
+        }
+        return asText({
+          matched: ids.length,
+          modified,
+          add_label_ids: add_label_ids ?? [],
+          remove_label_ids: remove_label_ids ?? [],
         });
-        modified += chunk.length;
-      }
-      return asText({
-        matched: ids.length,
-        modified,
-        add_label_ids: add_label_ids ?? [],
-        remove_label_ids: remove_label_ids ?? [],
-      });
-    },
-  );
+      },
+    );
+  }
 
-  server.tool(
+  if (allowLocalFiles) server.tool(
     "gmail_bulk_export",
     "Bulk-export messages matching a Gmail search query to a directory. Per message: <dest_dir>/<messageId>/{message.json, body.txt, body.html, attachments/...}. Also writes <dest_dir>/index.json summarizing all exported messages.",
     {
+      email: accountEmailSchema,
       query: z.string().describe("Gmail search query"),
       dest_dir: z.string().describe("Absolute path; created if missing"),
       max_messages: z.number().int().min(1).max(1000).optional().describe("Default 200"),
       include_attachments: z.boolean().optional().describe("Default true"),
       include_html_body: z.boolean().optional().describe("Default true"),
     },
-    async ({ query, dest_dir, max_messages, include_attachments, include_html_body }) => {
-      ensureAuthorized();
+    async ({ email, query, dest_dir, max_messages, include_attachments, include_html_body }) => {
+      const gmail = google.gmail({ version: "v1", auth: accountFor(email).client });
       const dir = resolve(dest_dir);
       await mkdir(dir, { recursive: true });
 

@@ -1,7 +1,7 @@
 {
   "name": "gsuite-mcp",
-  "version": "0.1.2",
-  "description": "MCP server for Gmail + Google Calendar. Bulk export, bulk label modify, draft-first safety, gated send, RFC 5322 reply threading, in-MCP OAuth setup.",
+  "version": "0.4.0",
+  "description": "Multi-account MCP server for Gmail, Google Calendar, Google Docs, Google Sheets, and Google Drive.",
   "type": "module",
   "license": "MIT",
   "author": "pranavgade20",
@@ -10,12 +10,15 @@
     "model-context-protocol",
     "gmail",
     "google-calendar",
+    "google-docs",
+    "google-sheets",
+    "google-drive",
     "gsuite",
     "google-workspace",
     "claude"
   ],
   "bin": {
-    "gsuite-mcp": "./dist/src/index.js"
+    "gsuite-mcp": "dist/src/index.js"
   },
   "files": [
     "dist/src",
@@ -24,6 +27,7 @@
   ],
   "scripts": {
     "build": "tsc",
+    "test": "node --import tsx --test tests/*.test.ts",
     "start": "node --import tsx/esm src/index.ts",
     "dev": "tsc --watch",
     "prepublishOnly": "rm -rf dist && tsc"

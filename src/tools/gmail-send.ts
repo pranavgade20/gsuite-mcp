@@ -1,10 +1,9 @@
 import { google } from "googleapis";
-import type { OAuth2Client } from "google-auth-library";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { ensureAuthorized } from "../auth.js";
 import { buildRawMessage } from "../util/mime.js";
 import { deriveReplyContext } from "../util/threading.js";
+import { accountEmailSchema, accountFor } from "./common.js";
 
 function asText(data: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
@@ -12,13 +11,12 @@ function asText(data: unknown) {
 
 const recipientSchema = z.union([z.string(), z.array(z.string())]);
 
-export function registerGmailSendTools(server: McpServer, auth: OAuth2Client): void {
-  const gmail = google.gmail({ version: "v1", auth });
-
+export function registerGmailSendTools(server: McpServer): void {
   server.tool(
     "gmail_send_message",
     "Send a new Gmail message immediately. Available only when GMAIL_ENABLE_SEND=true.",
     {
+      email: accountEmailSchema,
       to: recipientSchema,
       cc: recipientSchema.optional(),
       bcc: recipientSchema.optional(),
@@ -26,8 +24,8 @@ export function registerGmailSendTools(server: McpServer, auth: OAuth2Client): v
       body: z.string(),
       reply_to_message_id: z.string().optional(),
     },
-    async ({ to, cc, bcc, subject, body, reply_to_message_id }) => {
-      ensureAuthorized();
+    async ({ email, to, cc, bcc, subject, body, reply_to_message_id }) => {
+      const gmail = google.gmail({ version: "v1", auth: accountFor(email).client });
       let threadId: string | undefined;
       let inReplyTo: string | undefined;
       let references: string[] | undefined;
@@ -67,9 +65,9 @@ export function registerGmailSendTools(server: McpServer, auth: OAuth2Client): v
   server.tool(
     "gmail_send_draft",
     "Send an existing draft by ID. Available only when GMAIL_ENABLE_SEND=true.",
-    { draft_id: z.string() },
-    async ({ draft_id }) => {
-      ensureAuthorized();
+    { email: accountEmailSchema, draft_id: z.string() },
+    async ({ email, draft_id }) => {
+      const gmail = google.gmail({ version: "v1", auth: accountFor(email).client });
       const res = await gmail.users.drafts.send({
         userId: "me",
         requestBody: { id: draft_id },

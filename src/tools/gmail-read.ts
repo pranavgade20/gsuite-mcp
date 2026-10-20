@@ -1,8 +1,7 @@
 import { google, gmail_v1 } from "googleapis";
-import type { OAuth2Client } from "google-auth-library";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { ensureAuthorized } from "../auth.js";
+import { accountEmailSchema, accountFor } from "./common.js";
 
 function asText(data: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
@@ -82,13 +81,12 @@ function summarizeMessage(m: gmail_v1.Schema$Message) {
   };
 }
 
-export function registerGmailReadTools(server: McpServer, auth: OAuth2Client): void {
-  const gmail = google.gmail({ version: "v1", auth });
-
+export function registerGmailReadTools(server: McpServer, enableWrite = false): void {
   server.tool(
     "gmail_search",
     "Search Gmail. Returns enriched metadata per match (from/subject/date/snippet/labelIds/hasAttachments) by default. Set format='ids' for the lighter ID-only response (cheaper, useful for piping to bulk ops).",
     {
+      email: accountEmailSchema,
       query: z.string().describe("Gmail search query"),
       max_results: z.number().int().min(1).max(100).optional().describe("Default 20"),
       page_token: z.string().optional().describe("Pagination cursor from a previous call"),
@@ -97,8 +95,8 @@ export function registerGmailReadTools(server: McpServer, auth: OAuth2Client): v
         .optional()
         .describe("Default 'metadata'. Use 'ids' to skip per-message header fetches."),
     },
-    async ({ query, max_results, page_token, format }) => {
-      ensureAuthorized();
+    async ({ email, query, max_results, page_token, format }) => {
+      const gmail = google.gmail({ version: "v1", auth: accountFor(email).client });
       const fmt = format ?? "metadata";
       const listRes = await gmail.users.messages.list({
         userId: "me",
@@ -148,14 +146,15 @@ export function registerGmailReadTools(server: McpServer, auth: OAuth2Client): v
     "gmail_get_message",
     "Fetch a single Gmail message by ID with headers and decoded text body.",
     {
+      email: accountEmailSchema,
       id: z.string(),
       format: z
         .enum(["full", "metadata", "minimal"])
         .optional()
         .describe("Default 'full'"),
     },
-    async ({ id, format }) => {
-      ensureAuthorized();
+    async ({ email, id, format }) => {
+      const gmail = google.gmail({ version: "v1", auth: accountFor(email).client });
       const res = await gmail.users.messages.get({
         userId: "me",
         id,
@@ -168,9 +167,9 @@ export function registerGmailReadTools(server: McpServer, auth: OAuth2Client): v
   server.tool(
     "gmail_get_thread",
     "Fetch an entire Gmail thread by ID with all messages in order.",
-    { id: z.string() },
-    async ({ id }) => {
-      ensureAuthorized();
+    { email: accountEmailSchema, id: z.string() },
+    async ({ email, id }) => {
+      const gmail = google.gmail({ version: "v1", auth: accountFor(email).client });
       const res = await gmail.users.threads.get({ userId: "me", id, format: "full" });
       return asText({
         id: res.data.id,
@@ -183,33 +182,36 @@ export function registerGmailReadTools(server: McpServer, auth: OAuth2Client): v
   server.tool(
     "gmail_list_labels",
     "List all Gmail labels (system and user).",
-    {},
-    async () => {
-      ensureAuthorized();
+    { email: accountEmailSchema },
+    async ({ email }) => {
+      const gmail = google.gmail({ version: "v1", auth: accountFor(email).client });
       const res = await gmail.users.labels.list({ userId: "me" });
       return asText(res.data.labels ?? []);
     },
   );
 
-  server.tool(
-    "gmail_modify_labels",
-    "Add or remove labels on a message (e.g. mark as read by removing UNREAD, or archive by removing INBOX).",
-    {
-      message_id: z.string(),
-      add_label_ids: z.array(z.string()).optional(),
-      remove_label_ids: z.array(z.string()).optional(),
-    },
-    async ({ message_id, add_label_ids, remove_label_ids }) => {
-      ensureAuthorized();
-      const res = await gmail.users.messages.modify({
-        userId: "me",
-        id: message_id,
-        requestBody: {
-          addLabelIds: add_label_ids,
-          removeLabelIds: remove_label_ids,
-        },
-      });
-      return asText({ id: res.data.id, labelIds: res.data.labelIds });
-    },
-  );
+  if (enableWrite) {
+    server.tool(
+      "gmail_modify_labels",
+      "Add or remove labels on a message (e.g. mark as read by removing UNREAD, or archive by removing INBOX). Available only when GMAIL_ENABLE_WRITE=true.",
+      {
+        email: accountEmailSchema,
+        message_id: z.string(),
+        add_label_ids: z.array(z.string()).optional(),
+        remove_label_ids: z.array(z.string()).optional(),
+      },
+      async ({ email, message_id, add_label_ids, remove_label_ids }) => {
+        const gmail = google.gmail({ version: "v1", auth: accountFor(email).client });
+        const res = await gmail.users.messages.modify({
+          userId: "me",
+          id: message_id,
+          requestBody: {
+            addLabelIds: add_label_ids,
+            removeLabelIds: remove_label_ids,
+          },
+        });
+        return asText({ id: res.data.id, labelIds: res.data.labelIds });
+      },
+    );
+  }
 }

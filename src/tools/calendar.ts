@@ -1,8 +1,7 @@
 import { google } from "googleapis";
-import type { OAuth2Client } from "google-auth-library";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { ensureAuthorized } from "../auth.js";
+import { accountEmailSchema, accountFor } from "./common.js";
 
 function asText(data: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
@@ -20,15 +19,13 @@ const eventTimeSchema = z.object({
   timeZone: z.string().optional(),
 });
 
-export function registerCalendarTools(server: McpServer, auth: OAuth2Client): void {
-  const calendar = google.calendar({ version: "v3", auth });
-
+export function registerCalendarTools(server: McpServer, enableWrite = false): void {
   server.tool(
     "calendar_list_calendars",
     "List the user's calendars.",
-    {},
-    async () => {
-      ensureAuthorized();
+    { email: accountEmailSchema },
+    async ({ email }) => {
+      const calendar = google.calendar({ version: "v3", auth: accountFor(email).client });
       const res = await calendar.calendarList.list({});
       return asText(res.data.items ?? []);
     },
@@ -38,6 +35,7 @@ export function registerCalendarTools(server: McpServer, auth: OAuth2Client): vo
     "calendar_list_events",
     "List events on a calendar in a time window. Default calendar_id is 'primary'.",
     {
+      email: accountEmailSchema,
       calendar_id: z.string().optional(),
       time_min: z.string().optional().describe("RFC3339; default = now"),
       time_max: z.string().optional().describe("RFC3339"),
@@ -46,8 +44,8 @@ export function registerCalendarTools(server: McpServer, auth: OAuth2Client): vo
       page_token: z.string().optional(),
       single_events: z.boolean().optional().describe("Default true: expand recurring"),
     },
-    async ({ calendar_id, time_min, time_max, query, max_results, page_token, single_events }) => {
-      ensureAuthorized();
+    async ({ email, calendar_id, time_min, time_max, query, max_results, page_token, single_events }) => {
+      const calendar = google.calendar({ version: "v3", auth: accountFor(email).client });
       const res = await calendar.events.list({
         calendarId: calendar_id ?? "primary",
         timeMin: time_min ?? new Date().toISOString(),
@@ -69,11 +67,12 @@ export function registerCalendarTools(server: McpServer, auth: OAuth2Client): vo
     "calendar_get_event",
     "Fetch a single event.",
     {
+      email: accountEmailSchema,
       calendar_id: z.string().optional(),
       event_id: z.string(),
     },
-    async ({ calendar_id, event_id }) => {
-      ensureAuthorized();
+    async ({ email, calendar_id, event_id }) => {
+      const calendar = google.calendar({ version: "v3", auth: accountFor(email).client });
       const res = await calendar.events.get({
         calendarId: calendar_id ?? "primary",
         eventId: event_id,
@@ -82,10 +81,13 @@ export function registerCalendarTools(server: McpServer, auth: OAuth2Client): vo
     },
   );
 
+  if (!enableWrite) return;
+
   server.tool(
     "calendar_create_event",
-    "Create a calendar event. Provide either dateTime+timeZone for timed events or date for all-day.",
+    "Create a calendar event. Provide either dateTime+timeZone for timed events or date for all-day. Available only when CALENDAR_ENABLE_WRITE=true.",
     {
+      email: accountEmailSchema,
       calendar_id: z.string().optional(),
       summary: z.string(),
       description: z.string().optional(),
@@ -95,8 +97,8 @@ export function registerCalendarTools(server: McpServer, auth: OAuth2Client): vo
       attendees: z.array(attendeeSchema).optional(),
       send_updates: z.enum(["all", "externalOnly", "none"]).optional(),
     },
-    async ({ calendar_id, summary, description, location, start, end, attendees, send_updates }) => {
-      ensureAuthorized();
+    async ({ email, calendar_id, summary, description, location, start, end, attendees, send_updates }) => {
+      const calendar = google.calendar({ version: "v3", auth: accountFor(email).client });
       const res = await calendar.events.insert({
         calendarId: calendar_id ?? "primary",
         sendUpdates: send_updates ?? "none",
@@ -110,6 +112,7 @@ export function registerCalendarTools(server: McpServer, auth: OAuth2Client): vo
     "calendar_update_event",
     "Patch an existing event. Only provided fields are updated.",
     {
+      email: accountEmailSchema,
       calendar_id: z.string().optional(),
       event_id: z.string(),
       summary: z.string().optional(),
@@ -120,8 +123,8 @@ export function registerCalendarTools(server: McpServer, auth: OAuth2Client): vo
       attendees: z.array(attendeeSchema).optional(),
       send_updates: z.enum(["all", "externalOnly", "none"]).optional(),
     },
-    async ({ calendar_id, event_id, send_updates, ...patch }) => {
-      ensureAuthorized();
+    async ({ email, calendar_id, event_id, send_updates, ...patch }) => {
+      const calendar = google.calendar({ version: "v3", auth: accountFor(email).client });
       const res = await calendar.events.patch({
         calendarId: calendar_id ?? "primary",
         eventId: event_id,
@@ -136,12 +139,13 @@ export function registerCalendarTools(server: McpServer, auth: OAuth2Client): vo
     "calendar_delete_event",
     "Delete an event.",
     {
+      email: accountEmailSchema,
       calendar_id: z.string().optional(),
       event_id: z.string(),
       send_updates: z.enum(["all", "externalOnly", "none"]).optional(),
     },
-    async ({ calendar_id, event_id, send_updates }) => {
-      ensureAuthorized();
+    async ({ email, calendar_id, event_id, send_updates }) => {
+      const calendar = google.calendar({ version: "v3", auth: accountFor(email).client });
       await calendar.events.delete({
         calendarId: calendar_id ?? "primary",
         eventId: event_id,
